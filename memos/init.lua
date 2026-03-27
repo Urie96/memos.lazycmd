@@ -197,7 +197,7 @@ local function create_new_memo()
 end
 
 function M.setup(opt)
-  config = lc.tbl_extend(config, opt or {})
+  config = lc.tbl_extend('force', config, opt or {})
   lc.keymap.set('main', 'n', create_new_memo)
   lc.keymap.set('main', 'y', yank_current_memo)
   lc.keymap.set('main', '<C-e>', edit_current_memo)
