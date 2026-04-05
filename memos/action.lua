@@ -12,7 +12,7 @@ local function create_temp_file(prefix, suffix)
 end
 
 local function current_entry()
-  local entry = lc.api.page_get_hovered()
+  local entry = lc.api.get_hovered()
   if not entry or entry.kind ~= 'memo' or not entry.memo then return nil end
   return entry
 end

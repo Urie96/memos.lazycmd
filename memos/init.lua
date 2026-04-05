@@ -37,7 +37,7 @@ end
 
 function M.list(_, cb)
   lc.log('info', 'Loading memos list')
-  lc.api.page_set_preview 'Loading memos...'
+  lc.api.set_preview(nil, 'Loading memos...')
 
   if not action.ready() then
     cb(meta.attach {
