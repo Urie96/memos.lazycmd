@@ -6,10 +6,6 @@ local function trim_or_empty(value)
   return tostring(value or ''):match '^%s*(.-)%s*$'
 end
 
-local function create_temp_file(prefix, suffix)
-  local timestamp = os.time()
-  return '/tmp/' .. prefix .. '_' .. timestamp .. suffix
-end
 
 local function current_entry()
   local entry = lc.api.get_hovered()
@@ -138,18 +134,15 @@ function M.edit_current_memo(entry)
   end
 
   local memo = entry.memo
-  local temp_file = create_temp_file('memo', '.md')
   local content = memo.content or ''
-  local success, err = lc.fs.write_file_sync(temp_file, content)
-  if not success then
-    lc.notify('Failed to create temp file: ' .. tostring(err or 'Unknown error'))
-    return
-  end
 
-  lc.interactive({ cfg.editor, temp_file }, function()
-    local new_content, read_err = lc.fs.read_file_sync(temp_file)
+  lc.system.edit({ content = content, ext = 'md' }, function(new_content, err)
+    if err then
+      lc.notify('Error: Failed to read edited content ' .. tostring(err or ''))
+      return
+    end
     if not new_content then
-      lc.notify('Error: Failed to read edited content ' .. tostring(read_err or ''))
+      lc.notify 'Failed to read edited content'
       return
     end
 
@@ -169,8 +162,6 @@ function M.edit_current_memo(entry)
       lc.notify 'Memo updated successfully'
       lc.cmd 'reload'
     end)
-
-    os.remove(temp_file)
   end)
 end
 
@@ -213,14 +204,9 @@ function M.delete_current_memo(entry)
 end
 
 function M.create_new_memo()
-  local temp_file = create_temp_file('new_memo', '.md')
-  lc.fs.write_file_sync(temp_file, '')
-
-  lc.interactive({ cfg.editor, temp_file }, function()
-    local content, err = lc.fs.read_file_sync(temp_file)
-    os.remove(temp_file)
+  lc.system.edit({ content = '', ext = 'md' }, function(content, err)
     if err then
-      lc.notify('Error: Failed to read edited content' .. err)
+      lc.notify('Error: Failed to read edited content' .. tostring(err))
       return
     end
     if not content then

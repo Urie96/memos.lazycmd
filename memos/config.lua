@@ -3,7 +3,6 @@ local M = {}
 local cfg = {
   token = '',
   base_url = '',
-  editor = os.getenv 'EDITOR' or 'vim',
   visibility = 'PRIVATE',
   keymap = {
     new = 'n',
