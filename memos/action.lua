@@ -24,6 +24,90 @@ local function format_timestamp(ts)
   return ts
 end
 
+local function format_bytes(size)
+  local n = tonumber(size)
+  if not n then return tostring(size or '?') end
+  if n < 1024 then return string.format('%d B', n) end
+  if n < 1024 * 1024 then return string.format('%.1f KB', n / 1024) end
+  if n < 1024 * 1024 * 1024 then return string.format('%.1f MB', n / (1024 * 1024)) end
+  return string.format('%.1f GB', n / (1024 * 1024 * 1024))
+end
+
+local function is_image_attachment(attachment)
+  local mime = tostring((attachment or {}).type or ''):lower()
+  return mime:match '^image/' ~= nil
+end
+
+local IMAGE_CACHE_DIR = (os.getenv 'HOME' or '/tmp') .. '/.cache/lazycmd/memos-images'
+
+local function attachment_image_url(attachment)
+  if not is_image_attachment(attachment) then return nil end
+
+  if attachment.externalLink and attachment.externalLink ~= '' then return attachment.externalLink end
+
+  if cfg and cfg.base_url and attachment.name and attachment.filename then
+    return string.format('%s/file/%s/%s', cfg.base_url, attachment.name, attachment.filename)
+  end
+
+  return nil
+end
+
+local function cached_image_path(url, filename, attachment)
+  local ext = tostring(filename or ''):match '%.([^.]+)$' or 'img'
+  local raw_key = tostring((attachment or {}).name or '')
+  raw_key = raw_key:match('attachments/(.+)$') or raw_key
+  if raw_key == '' then raw_key = tostring(filename or 'image') end
+  raw_key = raw_key:gsub('[^%w._-]', '_')
+  return string.format('%s/%s.%s', IMAGE_CACHE_DIR, raw_key, ext)
+end
+
+local function attachment_preview_image(attachment)
+  local url = attachment_image_url(attachment)
+  if not url then return nil end
+
+  local path = cached_image_path(url, attachment.filename, attachment)
+  local stat = lc.fs.stat(path)
+  if stat and stat.exists and stat.is_file and (stat.size or 0) > 128 then return lc.style.image(path) end
+
+  return nil
+end
+
+local function prefetch_attachment_image(attachment, done)
+  local url = attachment_image_url(attachment)
+  if not url then
+    if done then done(false) end
+    return
+  end
+
+  local path = cached_image_path(url, attachment.filename, attachment)
+  local stat = lc.fs.stat(path)
+  if stat and stat.exists and stat.is_file and (stat.size or 0) > 128 then
+    if done then done(true) end
+    return
+  end
+
+  if stat and stat.exists and stat.is_file then lc.fs.remove(path) end
+
+  lc.fs.mkdir(IMAGE_CACHE_DIR)
+
+  local cmd = { 'curl', '-k', '-L', '-sS' }
+  if cfg and cfg.token and cfg.token ~= '' then
+    table.insert(cmd, '-H')
+    table.insert(cmd, 'Authorization: Bearer ' .. cfg.token)
+  end
+  table.insert(cmd, '-o')
+  table.insert(cmd, path)
+  table.insert(cmd, url)
+
+  lc.system.exec(cmd, function(output)
+    local ok = output and output.code == 0
+    local new_stat = lc.fs.stat(path)
+    ok = ok and new_stat and new_stat.exists and new_stat.is_file and (new_stat.size or 0) > 128
+    if not ok and new_stat and new_stat.exists and new_stat.is_file then lc.fs.remove(path) end
+    if done then done(ok) end
+  end)
+end
+
 function M.setup(opt)
   cfg = opt
 end
@@ -172,7 +256,8 @@ end
 
 function M.build_preview(memo)
   local lines = {}
-  table.insert(lines, lc.style.line { ('[memo] '):fg 'cyan', ('Metadata'):fg 'cyan' })
+  local preview_parts = {}
+  table.insert(lines, lc.style.line { ('󰦨 '):fg 'cyan', ('Metadata'):fg 'cyan' })
   table.insert(lines, lc.style.line { ('   ID:           '):fg 'cyan', (memo.id or ''):fg 'yellow' })
   table.insert(lines, lc.style.line { ('   State:        '):fg 'cyan', (memo.state or 'UNKNOWN'):fg 'blue' })
   table.insert(lines, lc.style.line { ('   Visibility:   '):fg 'cyan', (memo.visibility or 'PRIVATE'):fg 'magenta' })
@@ -195,10 +280,32 @@ function M.build_preview(memo)
 
   if memo.attachments and #memo.attachments > 0 then
     table.insert(lines, lc.style.line {
-      ('   '):fg 'cyan',
-      ('Attachments: '):fg 'cyan',
-      tostring(#memo.attachments):fg 'yellow',
+      ('   Attachments: '):fg 'cyan',
     })
+    for _, attachment in ipairs(memo.attachments) do
+      local filename = attachment.filename or attachment.name or '(unnamed)'
+      local mime = attachment.type or 'unknown'
+      local size = attachment.size and format_bytes(attachment.size) or nil
+
+      local parts = {
+        ('     • '):fg 'dark_gray',
+        tostring(filename):fg 'yellow',
+        ('  '):fg 'cyan',
+        tostring(mime):fg 'magenta',
+      }
+      if size then
+        table.insert(parts, ('  '):fg 'cyan')
+        table.insert(parts, tostring(size):fg 'green')
+      end
+      table.insert(lines, lc.style.line(parts))
+
+      if attachment.externalLink and attachment.externalLink ~= '' then
+        table.insert(lines, lc.style.line {
+          ('       ↳ '):fg 'dark_gray',
+          tostring(attachment.externalLink):fg 'blue',
+        })
+      end
+    end
   end
 
   if memo.relations and #memo.relations > 0 then
@@ -211,14 +318,23 @@ function M.build_preview(memo)
 
   if memo.reactions and #memo.reactions > 0 then
     table.insert(lines, lc.style.line {
-      ('   '):fg 'cyan',
-      ('Reactions:  '):fg 'cyan',
-      tostring(#memo.reactions):fg 'red',
+      ('   Reactions:  '):fg 'cyan',
     })
+    for _, reaction in ipairs(memo.reactions) do
+      local reaction_type = reaction.reactionType or '?'
+      local creator = reaction.creator or ''
+      creator = creator:match('users/(.+)$') or creator
+      table.insert(lines, lc.style.line {
+        ('     • '):fg 'dark_gray',
+        tostring(reaction_type):fg 'red',
+        ('  '):fg 'cyan',
+        tostring(creator):fg 'yellow',
+      })
+    end
   end
 
   table.insert(lines, '')
-  table.insert(lines, lc.style.line { ('[cfg] '):fg 'cyan', ('Properties'):fg 'cyan' })
+  table.insert(lines, lc.style.line { ('󰒓 '):fg 'cyan', ('Properties'):fg 'cyan' })
   if memo.property then
     local props = {}
     if memo.property.hasLink then table.insert(props, ('links'):fg 'blue') end
@@ -240,14 +356,68 @@ function M.build_preview(memo)
   end
 
   table.insert(lines, '')
-  table.insert(lines, lc.style.line { ('[txt] '):fg 'cyan', ('Content'):fg 'cyan' })
+  table.insert(lines, lc.style.line { ('󰈙 '):fg 'cyan', ('Content'):fg 'cyan' })
   table.insert(lines, '')
-  table.insert(lines, memo.content or '(no content)')
 
-  return lc.style.text(lines)
+  local content = memo.content or '(no content)'
+  local highlighted = lc.style.highlight(content, 'markdown')
+
+  table.insert(preview_parts, lc.style.text(lines))
+
+  if memo.attachments and #memo.attachments > 0 then
+    for _, attachment in ipairs(memo.attachments) do
+      local image = attachment_preview_image(attachment)
+      if image then
+        table.insert(preview_parts, '')
+        table.insert(preview_parts, lc.style.line {
+          ('󰋩 '):fg 'cyan',
+          tostring(attachment.filename or 'Image'):fg 'yellow',
+        })
+        table.insert(preview_parts, image)
+      end
+    end
+  end
+
+  table.insert(preview_parts, highlighted)
+
+  return preview_parts
 end
 
-function M.memo_preview(entry, cb) cb(M.build_preview(entry.memo)) end
+function M.memo_preview(entry, cb)
+  local memo = entry.memo or {}
+  local has_remote_images = false
+
+  if memo.attachments and #memo.attachments > 0 then
+    for _, attachment in ipairs(memo.attachments) do
+      if attachment_image_url(attachment) and not attachment_preview_image(attachment) then
+        has_remote_images = true
+        break
+      end
+    end
+  end
+
+  cb(M.build_preview(memo))
+
+  if not has_remote_images then return end
+
+  local pending = 0
+  local refreshed = false
+  local function maybe_refresh()
+    if refreshed or pending > 0 then return end
+    refreshed = true
+    cb(M.build_preview(memo))
+  end
+
+  for _, attachment in ipairs(memo.attachments or {}) do
+    if attachment_image_url(attachment) and not attachment_preview_image(attachment) then
+      pending = pending + 1
+      prefetch_attachment_image(attachment, function(_)
+        pending = pending - 1
+        maybe_refresh()
+      end)
+    end
+  end
+end
 
 function M.info_preview(entry)
   return lc.style.text {
