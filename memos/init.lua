@@ -1,6 +1,5 @@
 local action = require 'memos.action'
 local config = require 'memos.config'
-local meta = require 'memos.meta'
 
 local M = {}
 
@@ -37,10 +36,27 @@ local function memo_entry(memo)
   }
 end
 
+local function register_page_keymaps()
+  local keymap = config.get().keymap or {}
+  local path = '/memos/**'
+
+  local function map(key, callback, desc)
+    if key and key ~= '' then
+      deck.keymap.set('main', key, callback, { path = path, desc = desc })
+    end
+  end
+
+  map(keymap.new, action.create_new_memo, 'new memo')
+  map(keymap.open, action.edit_current_memo, 'edit memo')
+  map(keymap.edit, action.edit_current_memo, 'edit memo')
+  map(keymap.copy, action.yank_current_memo, 'copy memo content')
+  map(keymap.delete, action.delete_current_memo, 'delete memo')
+end
+
 function M.setup(opt)
   config.setup(opt or {})
   action.setup(config.get())
-  meta.setup(config.get())
+  register_page_keymaps()
 end
 
 function M.list(_, cb)
@@ -48,10 +64,11 @@ function M.list(_, cb)
   deck.api.set_preview(nil, 'Loading memos...')
 
   if not action.ready() then
-    cb(meta.attach {
+    cb({
       {
         key = 'configure',
         kind = 'info',
+        selectable = false,
         title = 'memos',
         message = 'Configure memos token and base_url first',
         detail = 'Set them in setup() before using this plugin.',
@@ -64,14 +81,14 @@ function M.list(_, cb)
   action.api_call('GET', '/memos?state=NORMAL&pageSize=100', nil, function(res)
     if not res.success then
       deck.notify('Error: ' .. tostring(res.error or 'Unknown error'))
-      cb(meta.attach {})
+      cb({})
       return
     end
 
     local memos = deck.json.decode(res.body)
     if type(memos) ~= 'table' or type(memos.memos) ~= 'table' or #memos.memos == 0 then
       deck.notify 'No memos found'
-      cb(meta.attach {})
+      cb({})
       return
     end
 
@@ -82,8 +99,22 @@ function M.list(_, cb)
     end
 
     deck.log('info', 'Loaded {} memos entries', #entries)
-    cb(meta.attach(entries))
+    cb(entries)
   end)
+end
+
+function M.preview(entry, cb)
+  if not entry then
+    cb(deck.style.text { deck.style.line { 'memos' } })
+    return
+  end
+
+  if entry.kind == 'memo' then
+    action.memo_preview(entry, cb)
+    return
+  end
+
+  cb(action.info_preview(entry))
 end
 
 return M
